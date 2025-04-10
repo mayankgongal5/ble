@@ -1,0 +1,301 @@
+package com.example.blue
+
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.blue.ui.theme.BlueTheme
+import androidx.core.content.ContextCompat
+
+class MainActivity : ComponentActivity() {
+
+    private val bluetoothAdapter: BluetoothAdapter? by lazy {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager.adapter
+    }
+
+    private val isBluetoothEnabled: Boolean
+        get() = bluetoothAdapter?.isEnabled == true
+
+    private val bleScanner by lazy {
+        bluetoothAdapter?.bluetoothLeScanner
+    }
+
+    private var scanning by mutableStateOf(false)
+    private val scanResults = mutableStateListOf<ScanResult>()
+
+    // Permission launcher
+    private val requestMultiplePermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.entries.all { it.value }
+        if (allGranted) {
+            // All permissions granted, check if Bluetooth is enabled
+            checkBluetoothEnabled()
+        } else {
+            Toast.makeText(this, "Permissions are required for Bluetooth scanning", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Bluetooth enable launcher
+    private val enableBluetoothRequest = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (isBluetoothEnabled) {
+            startBleScan()
+        } else {
+            Toast.makeText(this, "Bluetooth is required for scanning", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        setContent {
+            BlueTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    BleDeviceList(
+                        scanResults = scanResults,
+                        scanning = scanning,
+                        onScanButtonClick = {
+                            if (scanning) {
+                                stopBleScan()
+                            } else {
+                                checkPermissions()
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    private fun checkPermissions() {
+        val permissionsToRequest = mutableListOf<String>()
+
+        // Location permissions
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+        // For Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            requestMultiplePermissions.launch(permissionsToRequest.toTypedArray())
+        } else {
+            // All permissions granted, check if Bluetooth is enabled
+            checkBluetoothEnabled()
+        }
+    }
+
+    private fun checkBluetoothEnabled() {
+        if (isBluetoothEnabled) {
+            startBleScan()
+        } else {
+            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+            enableBluetoothRequest.launch(enableBtIntent)
+        }
+    }
+
+    private fun startBleScan() {
+        if (!scanning) {
+            scanResults.clear()
+            
+            // Check permissions before scanning
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+                    bleScanner?.startScan(scanCallback)
+                    scanning = true
+                } else {
+                    checkPermissions()
+                    return
+                }
+            } else {
+                if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    bleScanner?.startScan(scanCallback)
+                    scanning = true
+                } else {
+                    checkPermissions()
+                    return
+                }
+            }
+        }
+    }
+
+    private fun stopBleScan() {
+        if (scanning) {
+            // Check permissions before stopping scan
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+                    bleScanner?.stopScan(scanCallback)
+                    scanning = false
+                }
+            } else {
+                bleScanner?.stopScan(scanCallback)
+                scanning = false
+            }
+        }
+    }
+
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val deviceIndex = scanResults.indexOfFirst { it.device.address == result.device.address }
+            if (deviceIndex >= 0) {
+                scanResults[deviceIndex] = result
+            } else {
+                scanResults.add(result)
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Toast.makeText(this@MainActivity, "Scan failed with error: $errorCode", Toast.LENGTH_SHORT).show()
+            scanning = false
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (scanning) {
+            stopBleScan()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class) // Add this annotation to address the experimental API warning
+@Composable
+fun BleDeviceList(
+    scanResults: List<ScanResult>,
+    scanning: Boolean,
+    onScanButtonClick: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            // Use CenterAlignedTopAppBar which is more stable
+            CenterAlignedTopAppBar(
+                title = { Text("BLE Scanner") },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = onScanButtonClick) {
+                Text(if (scanning) "Stop" else "Scan")
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp)
+        ) {
+            if (scanning) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            if (scanResults.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (scanning) "Scanning..." else "No devices found",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            } else {
+                Text(
+                    text = "Found ${scanResults.size} devices:",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                LazyColumn {
+                    items(scanResults) { result ->
+                        DeviceItem(result)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeviceItem(result: ScanResult) {
+    // Safe device name access with permission check
+    val deviceName = remember {
+        try {
+            result.device.name ?: "Unnamed Device"
+        } catch (e: SecurityException) {
+            "Unnamed Device" // Fallback if permission not granted
+        }
+    }
+    
+    val deviceAddress = result.device.address
+    val rssi = result.rssi
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = deviceName,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Address: $deviceAddress",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Signal Strength: $rssi dBm",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
